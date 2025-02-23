@@ -14,7 +14,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Redis and MongoDB Config
-REDIS_STREAM_NAME = "url_stream"
+REDIS_QUEUE_NAME = "url_queue"
 MONGO_DB_NAME = "crawler_db"
 MONGO_COLLECTION_NAME = "metadata"
 USER_AGENTS = [
@@ -72,6 +72,7 @@ def extract_metadata(url):
         return None
 
 def worker():
+    """Consume URLs from Redis List using BLPOP and save metadata to MongoDB."""
     logging.info("Connecting to Redis and MongoDB...")
 
     try:
@@ -80,6 +81,7 @@ def worker():
         logging.info("Redis connection successful!")
     except Exception as e:
         logging.error(f"Redis connection error: {e}")
+        return
 
     mongo_client = MongoClient("mongodb://mongodb:27017/")
     collection = mongo_client[MONGO_DB_NAME][MONGO_COLLECTION_NAME]
@@ -88,20 +90,18 @@ def worker():
 
     while True:
         try:
-            messages = redis_client.xread({REDIS_STREAM_NAME: "0"}, count=1, block=1000)
-            if not messages:
-                continue
-            for stream_name, msg_list in messages:
-                for message_id, data in msg_list: 
-                    url = data.get("url")
-                    if url:
-                        logging.info(f"Processing: {url}")
-                        metadata = extract_metadata(url)
-                        if metadata:
-                            collection.insert_one(metadata)
-                            logging.info(f"Saved to MongoDB: {url}")
+            # BLPOP: Blocks until a URL is available (FIFO queue)
+            result = redis_client.blpop(REDIS_QUEUE_NAME, timeout=5)  # Blocks for 5 seconds if no message
+            if result:
+                _, url = result
+                logging.info(f"Processing: {url}")
 
-                        redis_client.xdel(REDIS_STREAM_NAME, message_id)
+                metadata = extract_metadata(url)
+                if metadata:
+                    collection.insert_one(metadata)
+                    logging.info(f"Saved to MongoDB: {url}")
+            else:
+                logging.info("No URLs found. Waiting...")
         except Exception as e:
             logging.error(f"Worker error: {e}")
         time.sleep(1)
@@ -111,9 +111,8 @@ if __name__ == "__main__":
     try:
         worker()
     except KeyboardInterrupt:
-        pass
+        logging.info("Worker stopped by user.")
     except Exception as e:
         logging.error(f"Worker error: {e}")
     finally:
         logging.info("Shutting down worker...")
-

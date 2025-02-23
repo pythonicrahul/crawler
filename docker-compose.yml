@@ -13,6 +13,8 @@ services:
       - "27018:27017"
     networks:
       - crawlnet
+    volumes:
+      - ./worker/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js
 
   producer:
     build: ./producer
@@ -32,9 +34,7 @@ services:
     networks:
       - crawlnet
     deploy:
-      replicas: 2
-
-
+      replicas: 5
 
 networks:
   crawlnet:
